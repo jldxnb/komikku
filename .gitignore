@@ -3,6 +3,10 @@
 #.vscode
 .kotlin
 build
+# KMK -->
+# Output folder of the KMK Test Build workflow.
+/dist
+# KMK <--
 
 # IDE files
 *.iml
