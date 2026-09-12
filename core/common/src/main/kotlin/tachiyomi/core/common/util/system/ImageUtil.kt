@@ -46,8 +46,15 @@ object ImageUtil {
         if (File(name).extension.equals("cbi", ignoreCase = true)) return true
         // SY <--
 
-        val extension = name.substringAfterLast('.')
-        return ImageType.entries.any { it.extension == extension } || openStream?.let { findImageType(it) } != null
+        // KMK -->
+        // Compare the extension case-insensitively and treat .jpeg as .jpg. Names like "001.JPG"
+        // or "002.jpeg" used to fall through to the sniffing branch below, and inside an archive
+        // that branch scans the whole file for every entry, which made large CBZ files slow to open.
+        val extension = name.substringAfterLast('.').lowercase()
+        return ImageType.entries.any {
+            it.extension == extension || (it.extension == "jpg" && extension == "jpeg")
+        } || openStream?.let { findImageType(it) } != null
+        // KMK <--
     }
 
     fun findImageType(openStream: () -> InputStream): ImageType? {
