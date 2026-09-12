@@ -32,6 +32,17 @@ class ArchiveReader(pfd: ParcelFileDescriptor) : Closeable {
      * Only accessed while holding this reader as a monitor, together with [close].
      */
     private var session: ArchiveInputStream? = null
+
+    /**
+     * Whether [close] has already released the mapping.
+     *
+     * Without this, closing the reader and asking for an entry afterwards would build a new session
+     * straight on top of the address that [close] just unmapped, which libarchive would then read
+     * as freed memory. It is also what makes [close] idempotent, since callers can reach it twice
+     * (the loader recycles the chapter, and the reader is also a [Closeable] in its own right).
+     */
+    @Volatile
+    private var closed = false
     // KMK <--
 
     // SY -->
@@ -63,9 +74,14 @@ class ArchiveReader(pfd: ParcelFileDescriptor) : Closeable {
      * keeps working after the session moves on to the next entry. Reading entries in archive order
      * (which is what the reader does for pages) only advances the session, so the per-page scan over
      * the whole archive is reduced to amortized constant time. Jumping backwards restarts the session.
+     *
+     * @throws IllegalStateException if the reader has already been closed. Callers hold this via a
+     * long lived lambda (page streams), so asking for an entry after [close] is a real possibility;
+     * failing loudly is the only way to avoid handing libarchive an unmapped address.
      */
     @Synchronized
     fun getInputStream(entryName: String): InputStream? {
+        check(!closed) { "ArchiveReader is closed" }
         return try {
             positionSessionOn(entryName)?.readBytes()?.inputStream()
         } catch (e: ArchiveException) {
@@ -134,6 +150,9 @@ class ArchiveReader(pfd: ParcelFileDescriptor) : Closeable {
     override fun close() {
         // KMK -->
         synchronized(this) {
+            if (closed) return
+            closed = true
+
             resetSession()
             Os.munmap(address, size)
         }
