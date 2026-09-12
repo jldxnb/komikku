@@ -1,0 +1,166 @@
+name: KMK Test Build
+# Builds the personal branch and publishes an installable APK for on-device testing.
+#
+# Why this exists: the upstream builders (build_preview.yml / build_release.yml) only
+# run on master, sign with upstream's private keystore and publish to the upstream
+# repository. They cannot build a fork's personal branch, so this workflow is the
+# fork-local equivalent.
+#
+# It builds the `debug` variant on purpose:
+#   * needs no google-services.json / client_secrets.json (telemetry and the updater
+#     are off unless -Pinclude-telemetry / -Penable-updater are passed, and they are not)
+#   * needs no signing keystore: Gradle signs debug builds with the standard debug key
+#   * applicationId is app.komikku.dev, which is a different app from the release
+#     app.komikku, so it installs alongside an existing Komikku without touching its
+#     data or its signature
+#
+# No secrets are required for this workflow to run.
+
+on:
+  # Manual trigger from the Actions tab.
+  workflow_dispatch:
+
+  # Also build automatically when the working branch is pushed.
+  push:
+    branches:
+      - personal
+    paths:
+      - 'app/**'
+      - 'core/**'
+      - 'core-metadata/**'
+      - 'data/**'
+      - 'domain/**'
+      - 'source-api/**'
+      - 'source-local/**'
+      - 'presentation-core/**'
+      - 'presentation-widget/**'
+      - 'i18n/**'
+      - 'i18n-kmk/**'
+      - 'i18n-sy/**'
+      - 'flagkit/**'
+      - 'telemetry/**'
+      - 'buildSrc/**'
+      - 'gradle/**'
+      - '*.kts'
+      - '.github/workflows/build_kmk_test.yml'
+
+# Needed to publish the APK as a release asset.
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build debug APK
+    runs-on: ubuntu-24.04
+    outputs:
+      SHA: ${{ steps.collect.outputs.SHA }}
+      SUBJECT: ${{ steps.collect.outputs.SUBJECT }}
+
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          # The version name suffix and the printed commit count come from
+          # `git rev-list --count HEAD`, so the full history is required.
+          fetch-depth: 0
+
+      - name: Set up JDK
+        uses: actions/setup-java@1bcf9fb12cf4aa7d266a90ae39939e61372fe520 # v5.4.0
+        with:
+          java-version-file: .github/.java-version
+          distribution: temurin
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6
+
+      - name: Check code format
+        run: ./gradlew spotlessCheck
+
+      - name: Run unit tests
+        run: ./gradlew testDebugUnitTest
+
+      - name: Build debug APK
+        run: ./gradlew assembleDebug
+
+      - name: Collect and name the APKs
+        id: collect
+        run: |
+          set -euo pipefail
+
+          sha=$(git rev-parse --short HEAD)
+          count=$(git rev-list --count HEAD)
+          subject=$(git log -1 --pretty=%s)
+
+          out=dist
+          mkdir -p "$out"
+
+          src=app/build/outputs/apk/debug
+
+          # The ABI splits are enabled with isUniversalApk = true, so this produces
+          # one APK per ABI plus a universal one that works on any device.
+          cp "$src/app-arm64-v8a-debug.apk"   "$out/Komikku-dev-$sha-arm64-v8a.apk"
+          cp "$src/app-armeabi-v7a-debug.apk" "$out/Komikku-dev-$sha-armeabi-v7a.apk"
+          cp "$src/app-universal-debug.apk"   "$out/Komikku-dev-$sha-universal.apk"
+
+          {
+            echo "SHA=$sha"
+            echo "SHORT_COUNT=$count"
+            echo "SUBJECT=$subject"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Komikku test build"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Commit | \`$sha\` |"
+            echo "| Commit count | $count |"
+            echo "| Message | $subject |"
+            echo "| applicationId | \`app.komikku.dev\` |"
+            echo ""
+            echo "Installs alongside the release \`app.komikku\`, so an existing Komikku is left untouched."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: komikku-dev-${{ steps.collect.outputs.SHA }}
+          path: dist/*.apk
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: Publish release
+    runs-on: ubuntu-24.04
+    needs: build
+    steps:
+      - name: Download APK
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist
+
+      - name: Publish as a release
+        # Release assets can be downloaded without signing in to GitHub, which the
+        # workflow artifacts cannot. That matters when the phone is the only device
+        # you have to hand.
+        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
+        with:
+          tag_name: kmk-test-${{ needs.build.outputs.SHA }}
+          name: Komikku test build ${{ needs.build.outputs.SHA }}
+          body: |
+            Test build of `${{ github.ref_name }}` at `${{ needs.build.outputs.SHA }}`.
+
+            **applicationId:** `app.komikku.dev` — installs alongside the release app
+            (`app.komikku`), so an existing Komikku and its data are left alone.
+
+            **Which file:** use `...-universal.apk` if you are unsure, or
+            `...-arm64-v8a.apk` for any phone made in roughly the last decade.
+
+            Last commit: ${{ needs.build.outputs.SUBJECT }}
+          files: dist/**/*.apk
+          prerelease: true
+          token: ${{ secrets.GITHUB_TOKEN }}
