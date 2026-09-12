@@ -162,13 +162,24 @@ class LocalSource(
         val existingFile = mangaDirFiles
             .firstOrNull { it.name == COMIC_INFO_FILE }
         val comicInfoArchiveFile = mangaDirFiles.firstOrNull { it.name == COMIC_INFO_ARCHIVE }
-        val comicInfoArchiveReader = comicInfoArchiveFile?.archiveReader(context)
+        // KMK -->
+        // The reader maps the whole archive and only close() unmaps it, so it is opened, read and
+        // closed in one place. Only the fact that the archive is encrypted is needed further down.
+        // This used to hold the reader open for the rest of the function and never close it, leaking
+        // one mapping per call.
+        var comicInfoArchiveEncrypted = false
         val existingComicInfo =
-            (existingFile?.openInputStream() ?: comicInfoArchiveReader?.getInputStream(COMIC_INFO_FILE))?.use {
+            (
+                existingFile?.openInputStream() ?: comicInfoArchiveFile?.archiveReader(context)?.use { reader ->
+                    comicInfoArchiveEncrypted = reader.encrypted
+                    reader.getInputStream(COMIC_INFO_FILE)
+                }
+                )?.use {
                 AndroidXmlReader(it, StandardCharsets.UTF_8.name()).use { xmlReader ->
                     xml.decodeFromReader<ComicInfo>(xmlReader)
                 }
             }
+        // KMK <--
         val newComicInfo = if (existingComicInfo != null) {
             manga.run {
                 existingComicInfo.copy(
@@ -190,7 +201,9 @@ class LocalSource(
             copyComicInfoFile(
                 xml.encodeToString(ComicInfo.serializer(), newComicInfo).byteInputStream(),
                 it,
-                comicInfoArchiveReader?.encrypted ?: false,
+                // KMK -->
+                comicInfoArchiveEncrypted,
+                // KMK <--
             )
         }
     }
@@ -239,8 +252,13 @@ class LocalSource(
                 comicInfoArchiveFile != null -> {
                     noXmlFile?.delete()
 
-                    comicInfoArchiveFile.archiveReader(context).getInputStream(COMIC_INFO_FILE)
-                        ?.let { setMangaDetailsFromComicInfoFile(it, manga) }
+                    // KMK -->
+                    // Close the reader: it owns an mmap of the archive that nothing else releases.
+                    comicInfoArchiveFile.archiveReader(context).use { reader ->
+                        reader.getInputStream(COMIC_INFO_FILE)
+                            ?.let { setMangaDetailsFromComicInfoFile(it, manga) }
+                    }
+                    // KMK <--
                 }
 
                 // SY <--
@@ -278,8 +296,13 @@ class LocalSource(
                     if (copiedFile != null && copiedFile.name != COMIC_INFO_ARCHIVE) {
                         setMangaDetailsFromComicInfoFile(copiedFile.openInputStream(), manga)
                     } else if (copiedFile != null && copiedFile.name == COMIC_INFO_ARCHIVE) {
-                        copiedFile.archiveReader(context).getInputStream(COMIC_INFO_FILE)
-                            ?.let { setMangaDetailsFromComicInfoFile(it, manga) }
+                        // KMK -->
+                        // Close the reader: it owns an mmap of the archive that nothing else releases.
+                        copiedFile.archiveReader(context).use { reader ->
+                            reader.getInputStream(COMIC_INFO_FILE)
+                                ?.let { setMangaDetailsFromComicInfoFile(it, manga) }
+                        }
+                        // KMK <--
                     } // SY <--
                     else {
                         // Avoid re-scanning

@@ -33,9 +33,15 @@ class TachiyomiImageDecoder(private val resources: ImageSource, private val opti
         var coverStream: BufferedInputStream? = null
         if (resources.sourceOrNull()?.peek()?.use { CbzCrypto.detectCoverImageArchive(it.inputStream()) } == true) {
             if (resources.source().peek().use { ImageUtil.findImageType(it.inputStream()) == null }) {
+                // KMK -->
+                // The reader owns an mmap of the whole archive and only close() unmaps it, so it has
+                // to be closed here. getCoverStream() returns a standalone copy, which is why the
+                // stream stays usable after the reader is gone. This used to leak one mapping per
+                // cover decode.
                 coverStream = UniFile.fromFile(resources.file().toFile())
                     ?.archiveReader(context = context)
-                    ?.getCoverStream()
+                    ?.use { it.getCoverStream() }
+                // KMK <--
             }
         }
         val decoder = resources.sourceOrNull()?.use {
