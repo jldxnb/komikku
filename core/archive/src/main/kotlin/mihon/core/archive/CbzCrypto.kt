@@ -200,12 +200,15 @@ object CbzCrypto {
     }
 
     fun ArchiveReader.getCoverStream(): BufferedInputStream? {
-        this.getInputStream(DEFAULT_COVER_NAME)?.let { stream ->
-            if (ImageUtil.isImage(DEFAULT_COVER_NAME) { stream }) {
-                return this.getInputStream(DEFAULT_COVER_NAME)?.buffered()
-            }
-        }
-        return null
+        // KMK -->
+        // Read the cover once and reuse that stream. The old code asked for "cover.jpg" a second
+        // time, which threw away the first lookup and forced the read session to restart and scan
+        // the whole archive again; since getInputStream now copies the entry out, it also meant
+        // materializing the cover twice. The name check below is case insensitive and knows "jpg",
+        // so for the default cover name the type is recognized without touching the stream at all.
+        val stream = getInputStream(DEFAULT_COVER_NAME) ?: return null
+        return if (ImageUtil.isImage(DEFAULT_COVER_NAME) { stream }) stream.buffered() else null
+        // KMK <--
     }
 }
 
