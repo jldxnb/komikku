@@ -36,6 +36,14 @@ class SyncDataJob(private val context: Context, workerParams: WorkerParameters) 
     // KMK <--
 
     override suspend fun doWork(): Result {
+        // KMK -->
+        // 本构建里同步服务不可用（比如缺 Google Drive 的 client_secrets.json）时直接跳过，
+        // 既不会弹"同步失败"，也不会起无谓的前台通知；残留的定时任务也能安全跑完。
+        if (!SyncManager.isSyncServiceUsable(Injekt.get<SyncPreferences>())) {
+            return Result.success()
+        }
+        // KMK <--
+
         if (tags.contains(TAG_AUTO)) {
             if (!context.isOnline()) {
                 return Result.retry()

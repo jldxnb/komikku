@@ -56,6 +56,7 @@ import eu.kanade.tachiyomi.data.coil.TachiyomiImageDecoder
 import eu.kanade.tachiyomi.data.connections.discord.DiscordRPCService
 import eu.kanade.tachiyomi.data.notification.Notifications
 import eu.kanade.tachiyomi.data.sync.SyncDataJob
+import eu.kanade.tachiyomi.data.sync.SyncManager
 import eu.kanade.tachiyomi.di.AppModule
 import eu.kanade.tachiyomi.di.PreferenceModule
 import eu.kanade.tachiyomi.di.SYPreferenceModule
@@ -230,7 +231,11 @@ class App : Application(), DefaultLifecycleObserver, SingletonImageLoader.Factor
         }
         val syncPreferences: SyncPreferences = Injekt.get()
         val syncTriggerOpt = syncPreferences.getSyncTriggerOptions()
-        if (syncPreferences.isSyncEnabled() && syncTriggerOpt.syncOnAppStart) {
+        // KMK -->
+        // Google Drive 在本构建不可用时（缺 client_secrets.json）不要触发同步
+        val syncUsable = SyncManager.isSyncServiceUsable(syncPreferences)
+        // KMK <--
+        if (syncUsable && syncTriggerOpt.syncOnAppStart) {
             SyncDataJob.startNow(this@App)
         }
 
@@ -306,7 +311,11 @@ class App : Application(), DefaultLifecycleObserver, SingletonImageLoader.Factor
 
         val syncPreferences: SyncPreferences = Injekt.get()
         val syncTriggerOpt = syncPreferences.getSyncTriggerOptions()
-        if (syncPreferences.isSyncEnabled() && syncTriggerOpt.syncOnAppResume) {
+        // KMK -->
+        // Google Drive 在本构建不可用时（缺 client_secrets.json）不要触发同步
+        val syncUsable = SyncManager.isSyncServiceUsable(syncPreferences)
+        // KMK <--
+        if (syncUsable && syncTriggerOpt.syncOnAppResume) {
             SyncDataJob.startNow(this@App)
         }
 

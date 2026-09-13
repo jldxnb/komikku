@@ -73,6 +73,7 @@ import eu.kanade.tachiyomi.util.system.DeviceUtil
 import eu.kanade.tachiyomi.util.system.toast
 import kotlinx.collections.immutable.persistentListOf
 import kotlinx.collections.immutable.persistentMapOf
+import kotlinx.collections.immutable.toPersistentMap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
@@ -552,20 +553,35 @@ object SettingsDataScreen : SearchableSettings {
     @Composable
     private fun getSyncPreferences(syncPreferences: SyncPreferences, syncService: Int): List<Preference> {
         val context = LocalContext.current
+        // KMK -->
+        // 自建构建没有 Google 的 client_secrets.json：把残留的 Google Drive 选择归一到"关闭"
+        val googleDriveAvailable = SyncManager.isGoogleDriveAvailable()
+        LaunchedEffect(googleDriveAvailable, syncService) {
+            if (!googleDriveAvailable && syncService == SyncManager.SyncService.GOOGLE_DRIVE.value) {
+                syncPreferences.syncService().set(SyncManager.SyncService.NONE.value)
+            }
+        }
+        // KMK <--
         return listOf(
             Preference.PreferenceGroup(
                 title = stringResource(SYMR.strings.pref_sync_service_category),
                 preferenceItems = persistentListOf(
                     Preference.PreferenceItem.ListPreference(
                         preference = syncPreferences.syncService(),
-                        entries = persistentMapOf(
-                            SyncManager.SyncService.NONE.value to stringResource(MR.strings.off),
-                            SyncManager.SyncService.SYNCYOMI.value to stringResource(SYMR.strings.syncyomi),
-                            SyncManager.SyncService.GOOGLE_DRIVE.value to stringResource(SYMR.strings.google_drive),
+                        entries = buildMap<Int, String> {
+                            put(SyncManager.SyncService.NONE.value, stringResource(MR.strings.off))
+                            put(SyncManager.SyncService.SYNCYOMI.value, stringResource(SYMR.strings.syncyomi))
                             // KMK -->
-                            SyncManager.SyncService.WEB_DAV.value to stringResource(KMR.strings.web_dav),
+                            // 自建构建里 Google Drive 不可用 → 这个选项直接不出现
+                            if (googleDriveAvailable) {
+                                put(
+                                    SyncManager.SyncService.GOOGLE_DRIVE.value,
+                                    stringResource(SYMR.strings.google_drive),
+                                )
+                            }
                             // KMK <--
-                        ),
+                            put(SyncManager.SyncService.WEB_DAV.value, stringResource(KMR.strings.web_dav))
+                        }.toPersistentMap(),
                         title = stringResource(SYMR.strings.pref_sync_service),
                         onValueChanged = {
                             // KMK -->
@@ -605,7 +621,11 @@ object SettingsDataScreen : SearchableSettings {
         val preferences = when (syncServiceType) {
             SyncManager.SyncService.NONE -> emptyList()
             SyncManager.SyncService.SYNCYOMI -> getSelfHostPreferences(syncPreferences)
-            SyncManager.SyncService.GOOGLE_DRIVE -> getGoogleDrivePreferences()
+            // KMK -->
+            // Google Drive 在本构建不可用时（缺 client_secrets.json）不显示账号配置项
+            SyncManager.SyncService.GOOGLE_DRIVE ->
+                if (SyncManager.isGoogleDriveAvailable()) getGoogleDrivePreferences() else emptyList()
+            // KMK <--
             // KMK -->
             SyncManager.SyncService.WEB_DAV -> getWebDavPreferences(syncPreferences)
             // KMK <--
