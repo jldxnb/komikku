@@ -270,3 +270,42 @@ jobs:
           path: dist/*.apk
           if-no-files-found: error
           retention-days: 90
+      # 失败时把挂掉的测试用例名贴成 commit 评论：任何人都能匿名读到，
+      # 这样排查 CI 失败不需要 token/登录。
+      - name: Report failing tests as a commit comment
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/failing-tests.md"
+          python3 - "$report" <<'PY'
+          import glob, sys, xml.etree.ElementTree as ET
+
+          paths = []
+          for pattern in (
+              'build/test-results/*/*.xml',
+              '*/build/test-results/*/*.xml',
+              '*/*/build/test-results/*/*.xml',
+          ):
+              paths += glob.glob(pattern)
+
+          lines = []
+          for path in sorted(set(paths)):
+              try:
+                  root = ET.parse(path).getroot()
+              except Exception:
+                  continue
+              for case in root.iter('testcase'):
+                  for problem in list(case.findall('failure')) + list(case.findall('error')):
+                      message = (problem.get('message') or '').replace('\n', ' ')[:400]
+                      lines.append(f"- `{case.get('classname')}.{case.get('name')}` — {message}")
+
+          body = "\n".join(lines) if lines else "（没有在 test-results 里找到失败用例，可能是构建/签名步骤失败，请看 Actions 日志）"
+          with open(sys.argv[1], 'w', encoding='utf-8') as fh:
+              fh.write(f"CI 失败：{body}\n")
+          print(body)
+          PY
+
+          gh api "repos/${{ github.repository }}/commits/$GITHUB_SHA/comments" \
+            -f body="$(cat "$report")" > /dev/null && echo "已把失败用例发到 commit 评论"
