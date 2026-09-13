@@ -92,6 +92,13 @@ class MangaCoverFetcher(
             }
         }
 
+        // KMK -->
+        // 本地封面优先：下载目录里已经有 cover 文件就直接用，不联网、不更新
+        if (isLibraryManga) {
+            localCoverFetchResult()?.let { return it }
+        }
+        // KMK <--
+
         // diskCacheKey is thumbnail_url
         if (url == null) error("No cover specified")
         return when (getResourceType(url)) {
@@ -101,6 +108,33 @@ class MangaCoverFetcher(
             null -> error("Invalid image")
         }
     }
+
+    // KMK -->
+    /** 下载目录里的本地封面（没有或打不开时返回 null，并清掉索引里的记录）。 */
+    private suspend fun localCoverFetchResult(): FetchResult? {
+        val uri = LocalCoverStore.localCoverUriFor(mangaCover.mangaId, mangaCover.sourceId) ?: return null
+        return try {
+            val source = UniFile.fromUri(options.context, uri.toUri())
+                ?.openInputStream()
+                ?.source()
+                ?.buffer()
+            if (source == null) {
+                LocalCoverStore.forgetCover(mangaCover.mangaId, mangaCover.sourceId)
+                return null
+            }
+            setRatioAndColorsInScope(mangaCover, bufferedSource = source.peek())
+            SourceFetchResult(
+                source = ImageSource(source = source, fileSystem = FileSystem.SYSTEM),
+                mimeType = "image/*",
+                dataSource = DataSource.DISK,
+            )
+        } catch (e: Exception) {
+            logcat(LogPriority.ERROR, e) { "Failed to read local cover" }
+            LocalCoverStore.forgetCover(mangaCover.mangaId, mangaCover.sourceId)
+            null
+        }
+    }
+    // KMK <--
 
     private fun fileLoader(file: File): FetchResult {
         // KMK -->
@@ -171,6 +205,16 @@ class MangaCoverFetcher(
                 // Read from cover cache after library manga cover updated
                 val responseCoverCache = writeResponseToCoverCache(response, libraryCoverCacheFile)
                 if (responseCoverCache != null) {
+                    // KMK -->
+                    // 网络真的拉到了封面 → 顺手落盘到漫画目录（失败不影响本次显示）
+                    if (isLibraryManga) {
+                        LocalCoverStore.saveFromCachedCover(
+                            mangaCover.mangaId,
+                            mangaCover.sourceId,
+                            responseCoverCache,
+                        )
+                    }
+                    // KMK <--
                     return fileLoader(responseCoverCache)
                 }
 
