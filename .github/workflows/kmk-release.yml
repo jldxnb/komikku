@@ -271,13 +271,10 @@ jobs:
 
           cat dist/release-notes.md
 
-      - name: Publish the rebased branch
-        if: steps.target.outputs.skip != 'true'
-        run: |
-          set -euo pipefail
-          tag="${{ steps.target.outputs.tag }}"
-          # personal 由用户本地掌握；这里只把 rebase 结果推到 ci/ 分支，方便本地对齐
-          git push --force origin "HEAD:refs/heads/ci/$tag"
+      # 说明：这里**不**推送 rebase 结果。
+      # GITHUB_TOKEN 无法推送包含 .github/workflows/** 改动的提交（需要 workflows 权限，而该权限
+      # 不能授予 GITHUB_TOKEN），而我们的补丁里正好有 workflow 文件。发布用的 tag 改为指向
+      # personal（内容与本次 rebase 结果等价），本地产物与 CI 产物因此保持一致。
 
       - name: Publish the release
         if: steps.target.outputs.skip != 'true'
@@ -286,7 +283,7 @@ jobs:
           tag_name: ${{ steps.target.outputs.release_tag }}
           name: Komikku ${{ steps.target.outputs.tag }} + KMK patches
           # tag 必须指向本次 rebase 的结果，而不是默认分支
-          target_commitish: ci/${{ steps.target.outputs.tag }}
+          target_commitish: personal
           body_path: dist/release-notes.md
           files: dist/*.apk
           prerelease: false
@@ -304,6 +301,8 @@ jobs:
       # 这样排查 CI 失败不需要 token/登录。
       - name: Report failing tests as a commit comment
         if: failure()
+        # 诊断是尽力而为：它自己失败不能掩盖真正的失败原因
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -347,5 +346,10 @@ jobs:
           print(body)
           PY
 
-          gh api "repos/${{ github.repository }}/commits/$GITHUB_SHA/comments" \
-            -f body="$(cat "$report")" > /dev/null && echo "已把失败用例发到 commit 评论"
+          # 用 curl 而不是 gh（避免 runner 上没有 gh），把 markdown 包成 JSON 提交
+          python3 -c 'import json,sys;open("payload.json","w").write(json.dumps({"body": open(sys.argv[1]).read()}))' "$report"
+          curl -sS -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${{ github.repository }}/commits/$GITHUB_SHA/comments" \
+            --data-binary @payload.json -o /dev/null -w 'commit comment HTTP %{http_code}\n'
