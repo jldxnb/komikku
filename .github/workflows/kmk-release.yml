@@ -143,7 +143,9 @@ jobs:
 
       - name: Unit tests
         if: steps.target.outputs.skip != 'true'
-        run: ./gradlew :core:archive:testDebugUnitTest :core:common:testDebugUnitTest
+        run: |
+          set -o pipefail
+          ./gradlew :core:archive:testDebugUnitTest :core:common:testDebugUnitTest --console=plain 2>&1 | tee "$RUNNER_TEMP/unit-tests.log"
 
       - name: Build release APKs
         if: steps.target.outputs.skip != 'true'
@@ -301,7 +303,17 @@ jobs:
                       message = (problem.get('message') or '').replace('\n', ' ')[:400]
                       lines.append(f"- `{case.get('classname')}.{case.get('name')}` — {message}")
 
-          body = "\n".join(lines) if lines else "（没有在 test-results 里找到失败用例，可能是构建/签名步骤失败，请看 Actions 日志）"
+          if lines:
+              body = "\n".join(lines)
+          else:
+              # 没有测试结果 = 失败发生在产出结果之前（Gradle/编译/内存），把日志末尾贴出来
+              import os
+              tails = []
+              for log in sorted(glob.glob(os.path.join(os.environ.get('RUNNER_TEMP', '/tmp'), '*.log'))):
+                  with open(log, errors='replace') as fh:
+                      tail = fh.read().splitlines()[-80:]
+                  tails.append('#### ' + os.path.basename(log) + '\n```\n' + '\n'.join(tail) + '\n```')
+              body = "\n\n".join(tails) if tails else "（既没有失败用例，也没有日志文件，见 Actions 页面）"
           with open(sys.argv[1], 'w', encoding='utf-8') as fh:
               fh.write(f"CI 失败：{body}\n")
           print(body)
