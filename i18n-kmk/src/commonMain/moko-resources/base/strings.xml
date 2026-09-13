@@ -238,4 +238,7 @@
     <string name="pref_discord_show_download_button_summary">Displays a button to download the app</string>
     <string name="pref_discord_show_discord_button">Show Discord Button</string>
     <string name="pref_discord_show_discord_button_summary">Displays a button to join the Discord server</string>
+    <!-- Local cover files -->
+    <string name="pref_backfill_local_covers">Backfill local cover files</string>
+    <string name="pref_backfill_local_covers_started">Backfilling local cover files…</string>
 </resources>
