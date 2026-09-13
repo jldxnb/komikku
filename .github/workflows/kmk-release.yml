@@ -149,18 +149,26 @@ jobs:
         if: steps.target.outputs.skip != 'true'
         run: ./gradlew :app:assembleRelease
 
-      - name: Sign APKs
+      - name: Decode the signing keystore
         if: steps.target.outputs.skip != 'true'
-        uses: r0adkll/sign-android-release@f30bdd30588842ac76044ecdbd4b6d0e3e813478
-        with:
-          releaseDirectory: app/build/outputs/apk/release
-          signingKeyBase64: ${{ secrets.KMK_KEYSTORE_BASE64 }}
-          alias: ${{ secrets.KMK_KEY_ALIAS }}
-          keyStorePassword: ${{ secrets.KMK_KEYSTORE_PASSWORD }}
-          keyPassword: ${{ secrets.KMK_KEY_PASSWORD }}
+        env:
+          KMK_KEYSTORE_BASE64: ${{ secrets.KMK_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KMK_KEYSTORE_BASE64:-}" ]; then
+            echo "::error::secret KMK_KEYSTORE_BASE64 是空的，请用 scripts/set-gh-secret.py 重新上传"
+            exit 1
+          fi
+          printf '%s' "$KMK_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/kmk.p12"
+          echo "keystore 大小: $(stat -c %s "$RUNNER_TEMP/kmk.p12") 字节"
+          echo "keystore sha256: $(sha256sum "$RUNNER_TEMP/kmk.p12" | cut -d' ' -f1)"
 
-      - name: Rename and verify the signed APKs
+      - name: Sign the release APKs
         if: steps.target.outputs.skip != 'true'
+        env:
+          KMK_KEYSTORE_PASSWORD: ${{ secrets.KMK_KEYSTORE_PASSWORD }}
+          KMK_KEY_ALIAS: ${{ secrets.KMK_KEY_ALIAS }}
+          KMK_KEY_PASSWORD: ${{ secrets.KMK_KEY_PASSWORD }}
         run: |
           set -euo pipefail
           tag="${{ steps.target.outputs.tag }}"
@@ -168,11 +176,25 @@ jobs:
           build_tools=$(ls -d "$sdk"/build-tools/* | sort -V | tail -n 1)
           echo "build-tools: $build_tools"
 
+          if [ -z "${KMK_KEYSTORE_PASSWORD:-}" ] || [ -z "${KMK_KEY_ALIAS:-}" ] || [ -z "${KMK_KEY_PASSWORD:-}" ]; then
+            echo "::error::签名相关的 secret 不完整（KMK_KEYSTORE_PASSWORD / KMK_KEY_ALIAS / KMK_KEY_PASSWORD）"
+            exit 1
+          fi
+
           mkdir -p dist
           for abi in universal arm64-v8a armeabi-v7a; do
-            src="app/build/outputs/apk/release/app-$abi-release-unsigned-signed.apk"
+            src="app/build/outputs/apk/release/app-$abi-release-unsigned.apk"
             [ -f "$src" ] || continue
-            cp "$src" "dist/Komikku-$abi-$tag.apk"
+            aligned="$RUNNER_TEMP/app-$abi-aligned.apk"
+            out="dist/Komikku-$abi-$tag.apk"
+            "$build_tools/zipalign" -p -f 4 "$src" "$aligned"
+            # 密码走环境变量，避免落盘；apksigner 会自动识别 PKCS12
+            "$build_tools/apksigner" sign \
+              --ks "$RUNNER_TEMP/kmk.p12" \
+              --ks-key-alias "$KMK_KEY_ALIAS" \
+              --ks-pass env:KMK_KEYSTORE_PASSWORD \
+              --key-pass env:KMK_KEY_PASSWORD \
+              --out "$out" "$aligned"
           done
 
           if [ -z "$(ls -A dist)" ]; then
@@ -180,9 +202,23 @@ jobs:
             exit 1
           fi
 
+      - name: Verify the signed APKs
+        if: steps.target.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          tag="${{ steps.target.outputs.tag }}"
+          sdk="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          build_tools=$(ls -d "$sdk"/build-tools/* | sort -V | tail -n 1)
+
+          expected="262628ce53503ff92a5e81baab60e2d91b8ab6da066f0e1b56ee0d3b6c35fca9"
           for apk in dist/*.apk; do
             echo "=== $apk ==="
-            "$build_tools/apksigner" verify --print-certs "$apk"
+            certs=$("$build_tools/apksigner" verify --print-certs "$apk")
+            echo "$certs"
+            if ! grep -q "$expected" <<< "$certs"; then
+              echo "::error::$apk 的签名证书不是预期的 KMK 密钥（$expected）"
+              exit 1
+            fi
             "$build_tools/aapt2" dump badging "$apk" | grep -E '^package:|^native-code' || true
             echo "dex: $(unzip -l "$apk" | grep -c 'classes.*\.dex' || true)"
           done
