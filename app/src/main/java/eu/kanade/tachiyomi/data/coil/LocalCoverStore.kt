@@ -3,17 +3,24 @@ package eu.kanade.tachiyomi.data.coil
 import android.content.Context
 import androidx.core.net.toUri
 import com.hippo.unifile.UniFile
+import eu.kanade.tachiyomi.data.cache.CoverCache
 import eu.kanade.tachiyomi.data.download.DownloadCache
+import eu.kanade.tachiyomi.data.download.DownloadProvider
 import eu.kanade.tachiyomi.network.NetworkHelper
 import eu.kanade.tachiyomi.source.Source
 import eu.kanade.tachiyomi.source.online.HttpSource
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import logcat.LogPriority
 import okhttp3.Request
 import tachiyomi.core.common.util.system.logcat
 import tachiyomi.domain.manga.model.Manga
 import tachiyomi.domain.manga.repository.MangaRepository
+import tachiyomi.domain.source.service.SourceManager
+import tachiyomi.source.local.isLocal
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import java.io.File
@@ -35,11 +42,21 @@ import java.util.concurrent.ConcurrentHashMap
 internal object LocalCoverStore {
     private const val COVER_FILE_NAME = "cover.jpg"
     private const val COVER_TEMP_SUFFIX = ".tmp"
+    private const val COVER_BACKUP_SUFFIX = ".bak"
 
     private val downloadCache: DownloadCache by lazy { Injekt.get() }
     private val context: Context by lazy { Injekt.get() }
     private val networkHelper: NetworkHelper by lazy { Injekt.get() }
     private val mangaRepository: MangaRepository by lazy { Injekt.get() }
+    private val coverCache: CoverCache by lazy { Injekt.get() }
+    private val downloadProvider: DownloadProvider by lazy { Injekt.get() }
+    private val sourceManager: SourceManager by lazy { Injekt.get() }
+
+    /** "显示即回填"用的后台作用域：只在后台复制文件，绝不阻塞封面显示。 */
+    private val backfillScope by lazy { CoroutineScope(SupervisorJob() + Dispatchers.IO) }
+
+    /** 本次运行里已经处理过的漫画（失败会放开，允许下次再试）。 */
+    private val backfillAttempted = ConcurrentHashMap.newKeySet<Long>()
 
     /** 会话内缓存 mangaId → ogTitle，避免每一张封面都查一次数据库。 */
     private val titleByMangaId = ConcurrentHashMap<Long, String>()
@@ -126,19 +143,129 @@ internal object LocalCoverStore {
     suspend fun save(manga: Manga, bytes: ByteArray): Boolean =
         save(manga.source, manga.ogTitle, bytes)
 
-    suspend fun save(sourceId: Long, mangaTitle: String, bytes: ByteArray): Boolean = withContext(Dispatchers.IO) {
-        val dir = downloadCache.getMangaDir(sourceId, mangaTitle) ?: return@withContext false
+    suspend fun save(sourceId: Long, mangaTitle: String, bytes: ByteArray): Boolean {
+        val dir = downloadCache.getMangaDir(sourceId, mangaTitle) ?: return false
+        return saveToDirectory(dir, sourceId, mangaTitle, bytes)
+    }
+
+    /**
+     * 把封面写进指定目录（目录可能来自磁盘直查，不在下载索引里）。
+     * 临时文件名带时间戳，避免两处同时写入时互相踩踏；写完再改名成 cover.jpg。
+     */
+    suspend fun saveToDirectory(
+        dir: UniFile,
+        sourceId: Long,
+        mangaTitle: String,
+        bytes: ByteArray,
+    ): Boolean = withContext(Dispatchers.IO) {
+        if (bytes.isEmpty()) return@withContext false
+
+        val stamp = System.nanoTime()
+        val tmp = try {
+            dir.createFile("$COVER_FILE_NAME.$stamp$COVER_TEMP_SUFFIX") ?: return@withContext false
+        } catch (e: Exception) {
+            return@withContext false
+        }
+
+        var replaced = false
         try {
-            val tmp = dir.createFile("$COVER_FILE_NAME$COVER_TEMP_SUFFIX") ?: return@withContext false
             tmp.openOutputStream().use { output -> output.write(bytes) }
-            dir.findFile(COVER_FILE_NAME)?.delete()
-            if (!tmp.renameTo(COVER_FILE_NAME)) return@withContext false
+
+            // 先把旧文件挪成备份；替换成功再删备份，替换失败就还原 —— 绝不静默丢掉已有封面
+            val backupName = "$COVER_FILE_NAME.$stamp$COVER_BACKUP_SUFFIX"
+            val backedUp = dir.findFile(COVER_FILE_NAME)?.renameTo(backupName) == true
+            if (!tmp.renameTo(COVER_FILE_NAME)) {
+                if (backedUp) dir.findFile(backupName)?.renameTo(COVER_FILE_NAME)
+                return@withContext false
+            }
+            replaced = true
+            if (backedUp) dir.findFile(backupName)?.delete()
+
             val saved = dir.findFile(COVER_FILE_NAME) ?: return@withContext false
             downloadCache.setLocalCoverUri(sourceId, mangaTitle, saved.uri.toString())
             true
         } catch (e: Exception) {
             logcat(LogPriority.ERROR, e) { "Failed to write local cover for $mangaTitle" }
             false
+        } finally {
+            // 只有没替换成功时，残留的临时文件才是垃圾
+            if (!replaced) tmp.delete()
+        }
+    }
+
+    /**
+     * 显示封面时的"顺手回填"：把本次真正用于显示的缓存文件复制进下载目录。
+     * - 只做本地复制，绝不联网；
+     * - 同一本漫画每次运行只做一次（失败会放开重试）；
+     * - 没有下载目录时什么都不做（不新建目录）。
+     */
+    fun backfillLater(mangaId: Long, sourceId: Long, cacheFile: File?) {
+        if (cacheFile == null || !backfillAttempted.add(mangaId)) return
+        backfillScope.launch {
+            val done = try {
+                val title = titleOf(mangaId)
+                if (title == null) {
+                    false
+                } else {
+                    val dir = downloadCache.getMangaDir(sourceId, title)
+                    if (dir == null) {
+                        // 没有下载目录：不标记成"已处理"，等目录出现后再补
+                        false
+                    } else if (downloadCache.getLocalCoverUri(sourceId, title) != null) {
+                        true
+                    } else if (!cacheFile.exists()) {
+                        false
+                    } else {
+                        saveToDirectory(dir, sourceId, title, cacheFile.readBytes())
+                    }
+                }
+            } catch (e: Exception) {
+                logcat(LogPriority.ERROR, e) { "Failed to backfill local cover for manga $mangaId" }
+                false
+            }
+            if (!done) backfillAttempted.remove(mangaId)
+        }
+    }
+
+    /**
+     * 批量回填（后台任务用）：有下载目录、且还没有本地封面时，从应用封面缓存复制一份。
+     * 只用本地文件，不联网、不新建目录。返回 true 表示这次真的写入了（或发现了已存在的文件）。
+     */
+    suspend fun backfillFromCache(manga: Manga): Boolean {
+        if (downloadCache.getLocalCoverUri(manga.source, manga.ogTitle) != null) return false
+        val dir = findMangaDir(manga) ?: return false
+
+        val existing = dir.findFile(COVER_FILE_NAME)
+        if (existing != null) {
+            // 文件已经在磁盘上，只是索引还没扫描到 → 顺手把索引补上
+            downloadCache.setLocalCoverUri(manga.source, manga.ogTitle, existing.uri.toString())
+            return true
+        }
+
+        val cacheFile = preferredCoverCacheFile(manga) ?: return false
+        return try {
+            saveToDirectory(dir, manga.source, manga.ogTitle, cacheFile.readBytes())
+        } catch (e: Exception) {
+            logcat(LogPriority.ERROR, e) { "Failed to backfill local cover for ${manga.title}" }
+            false
+        }
+    }
+
+    /** 优先用"用户实际看到的那张"：自定义封面 → 源站封面缓存。 */
+    private fun preferredCoverCacheFile(manga: Manga): File? {
+        val customCover = coverCache.getCustomCoverFile(manga.id)
+        if (customCover.exists()) return customCover
+        return coverCache.getCoverFile(manga.thumbnailUrl)?.takeIf { it.exists() }
+    }
+
+    /** 找漫画的下载目录：先查下载索引（快），没有再按磁盘直查（索引里掉号的旧目录也能补上）。 */
+    private fun findMangaDir(manga: Manga): UniFile? {
+        downloadCache.getMangaDir(manga.source, manga.ogTitle)?.let { return it }
+        return try {
+            val source = sourceManager.getOrStub(manga.source)
+            if (source.isLocal()) null else downloadProvider.findMangaDir(manga.ogTitle, source)
+        } catch (e: Exception) {
+            null
         }
     }
 

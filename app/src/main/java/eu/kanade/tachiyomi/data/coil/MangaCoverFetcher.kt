@@ -88,6 +88,12 @@ class MangaCoverFetcher(
         if (useCustomCover) {
             val customCoverFile = customCoverFileLazy.value
             if (customCoverFile.exists()) {
+                // KMK -->
+                // 显示即回填：这张图正在被显示，顺手在后台补进下载目录
+                if (isLibraryManga) {
+                    LocalCoverStore.backfillLater(mangaCover.mangaId, mangaCover.sourceId, customCoverFile)
+                }
+                // KMK <--
                 return fileLoader(customCoverFile)
             }
         }
@@ -174,6 +180,12 @@ class MangaCoverFetcher(
             null
         }
         if (libraryCoverCacheFile?.exists() == true && options.diskCachePolicy.readEnabled) {
+            // KMK -->
+            // 显示即回填：命中应用封面缓存时，顺手把同一张图写进下载目录（纯本地、后台）
+            if (isLibraryManga) {
+                LocalCoverStore.backfillLater(mangaCover.mangaId, mangaCover.sourceId, libraryCoverCacheFile)
+            }
+            // KMK <--
             return fileLoader(libraryCoverCacheFile)
         }
 
@@ -183,6 +195,12 @@ class MangaCoverFetcher(
             if (snapshot != null) {
                 val snapshotCoverCache = moveSnapshotToCoverCache(snapshot, libraryCoverCacheFile)
                 if (snapshotCoverCache != null) {
+                    // KMK -->
+                    // 显示即回填：刚搬进封面缓存，顺手补进下载目录
+                    if (isLibraryManga) {
+                        LocalCoverStore.backfillLater(mangaCover.mangaId, mangaCover.sourceId, snapshotCoverCache)
+                    }
+                    // KMK <--
                     // Read from cover cache after added to library
                     return fileLoader(snapshotCoverCache)
                 }

@@ -43,6 +43,7 @@ import eu.kanade.tachiyomi.R
 import eu.kanade.tachiyomi.core.security.SecurityPreferences
 import eu.kanade.tachiyomi.data.download.DownloadCache
 import eu.kanade.tachiyomi.data.download.DownloadManager
+import eu.kanade.tachiyomi.data.library.LocalCoverBackfillJob
 import eu.kanade.tachiyomi.data.library.MetadataUpdateJob
 import eu.kanade.tachiyomi.data.updater.AppUpdateJob
 import eu.kanade.tachiyomi.network.NetworkHelper
@@ -372,6 +373,13 @@ object SettingsAdvancedScreen : SearchableSettings {
                     onClick = { MetadataUpdateJob.startNow(context) },
                 ),
                 // KMK -->
+                Preference.PreferenceItem.TextPreference(
+                    title = stringResource(KMR.strings.pref_backfill_local_covers),
+                    onClick = {
+                        LocalCoverBackfillJob.startNow(context, force = true)
+                        context.toast(KMR.strings.pref_backfill_local_covers_started)
+                    },
+                ),
                 Preference.PreferenceItem.SwitchPreference(
                     preference = uiPreferences.preloadLibraryColor(),
                     title = stringResource(KMR.strings.preload_library_cover_color),

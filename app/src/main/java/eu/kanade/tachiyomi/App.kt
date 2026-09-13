@@ -54,6 +54,7 @@ import eu.kanade.tachiyomi.data.coil.PagePreviewFetcher
 import eu.kanade.tachiyomi.data.coil.PagePreviewKeyer
 import eu.kanade.tachiyomi.data.coil.TachiyomiImageDecoder
 import eu.kanade.tachiyomi.data.connections.discord.DiscordRPCService
+import eu.kanade.tachiyomi.data.library.LocalCoverBackfillJob
 import eu.kanade.tachiyomi.data.notification.Notifications
 import eu.kanade.tachiyomi.data.sync.SyncDataJob
 import eu.kanade.tachiyomi.data.sync.SyncManager
@@ -238,6 +239,11 @@ class App : Application(), DefaultLifecycleObserver, SingletonImageLoader.Factor
         if (syncUsable && syncTriggerOpt.syncOnAppStart) {
             SyncDataJob.startNow(this@App)
         }
+
+        // KMK -->
+        // 启动后在后台补齐下载目录里的本地封面（纯本地复制、带节流）
+        LocalCoverBackfillJob.startNow(this@App)
+        // KMK <--
 
         initializeMigrator()
     }
