@@ -27,6 +27,7 @@ import eu.kanade.tachiyomi.data.cache.CoverCache
 import eu.kanade.tachiyomi.data.download.DownloadCache
 import eu.kanade.tachiyomi.data.download.DownloadManager
 import eu.kanade.tachiyomi.data.library.LibraryUpdateJob
+import eu.kanade.tachiyomi.data.sync.SyncManager
 import eu.kanade.tachiyomi.data.track.TrackStatus
 import eu.kanade.tachiyomi.data.track.TrackerManager
 import eu.kanade.tachiyomi.source.Source
@@ -385,8 +386,11 @@ class LibraryScreenModel(
         syncPreferences.syncService()
             .changes()
             .distinctUntilChanged()
-            .onEach { syncService ->
-                mutableState.update { it.copy(isSyncEnabled = syncService != 0) }
+            .onEach { _ ->
+                // KMK -->
+                // Google Drive 在本构建不可用时（缺 client_secrets.json）不显示"立即同步"按钮
+                mutableState.update { it.copy(isSyncEnabled = SyncManager.isSyncServiceUsable(syncPreferences)) }
+                // KMK <--
             }
             .launchIn(screenModelScope)
         // SY <--

@@ -27,6 +27,7 @@ import eu.kanade.tachiyomi.data.LibraryUpdateStatus
 import eu.kanade.tachiyomi.data.download.DownloadManager
 import eu.kanade.tachiyomi.data.notification.Notifications
 import eu.kanade.tachiyomi.data.sync.SyncDataJob
+import eu.kanade.tachiyomi.data.sync.SyncManager
 import eu.kanade.tachiyomi.data.track.TrackStatus
 import eu.kanade.tachiyomi.data.track.TrackerManager
 import eu.kanade.tachiyomi.source.model.SManga
@@ -830,7 +831,13 @@ class LibraryUpdateJob(private val context: Context, workerParams: WorkerParamet
             val syncPreferences: SyncPreferences = Injekt.get()
 
             // Always sync the data before library update if syncing is enabled.
-            if (syncPreferences.isSyncEnabled()) {
+            if (
+                // KMK -->
+                // Google Drive 在本构建不可用时（缺 client_secrets.json）视为未启用，
+                // 免得同步失败把书库下拉刷新一起拖住。
+                SyncManager.isSyncServiceUsable(syncPreferences)
+                // KMK <--
+            ) {
                 // Check if SyncDataJob is already running
                 if (SyncDataJob.isRunning(context)) {
                     // SyncDataJob is already running

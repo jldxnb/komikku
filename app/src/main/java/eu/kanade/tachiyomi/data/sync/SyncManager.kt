@@ -1,5 +1,6 @@
 package eu.kanade.tachiyomi.data.sync
 
+import android.app.Application
 import android.content.Context
 import android.net.Uri
 import eu.kanade.domain.sync.SyncPreferences
@@ -52,6 +53,35 @@ class SyncManager(
     private val notifier: SyncNotifier = SyncNotifier(context)
     private val mangaRestorer: MangaRestorer = MangaRestorer()
 
+    // KMK -->
+    /**
+     * Google Drive 同步依赖构建时注入的 client_secrets.json（只有上游官方构建才有）。
+     * 自建构建缺这个文件时把 Google Drive 视为不可用：既不弹"同步失败"通知，
+     * 也不会拖住书库下拉刷新（下拉刷新会先排一次同步，再排书库更新）。
+     */
+    companion object {
+        private val googleDriveCredentialsAvailable: Boolean by lazy {
+            try {
+                Injekt.get<Application>().assets.open("client_secrets.json").close()
+                true
+            } catch (e: IOException) {
+                false
+            }
+        }
+
+        fun isGoogleDriveAvailable(): Boolean = googleDriveCredentialsAvailable
+
+        /** 当前选中的同步服务在这个构建里是否真的可用。未启用时同样返回 false。 */
+        fun isSyncServiceUsable(syncPreferences: SyncPreferences): Boolean {
+            if (!syncPreferences.isSyncEnabled()) return false
+            return when (SyncService.fromInt(syncPreferences.syncService().get())) {
+                SyncService.GOOGLE_DRIVE -> isGoogleDriveAvailable()
+                else -> true
+            }
+        }
+    }
+    // KMK <--
+
     enum class SyncService(val value: Int) {
         NONE(0),
         SYNCYOMI(1),
@@ -73,6 +103,14 @@ class SyncManager(
      * from the database using the BackupManager, then synchronizes the data with a sync service.
      */
     suspend fun syncData() {
+        // KMK -->
+        // 兜底：同步服务在本构建不可用时直接跳过，避免任何残留入口再抛 FileNotFoundException
+        if (!isSyncServiceUsable(syncPreferences)) {
+            logcat(LogPriority.INFO) { "Selected sync service is unavailable in this build, skipping sync" }
+            return
+        }
+        // KMK <--
+
         // Reset isSyncing in case it was left over or failed syncing during restore.
         handler.await(inTransaction = true) {
             mangasQueries.resetIsSyncing()

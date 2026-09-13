@@ -27,6 +27,7 @@ import eu.kanade.tachiyomi.data.saver.Image
 import eu.kanade.tachiyomi.data.saver.ImageSaver
 import eu.kanade.tachiyomi.data.saver.Location
 import eu.kanade.tachiyomi.data.sync.SyncDataJob
+import eu.kanade.tachiyomi.data.sync.SyncManager
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.online.HttpSource
 import eu.kanade.tachiyomi.source.online.MetadataSource
@@ -813,7 +814,10 @@ class ReaderViewModel @JvmOverloads constructor(
     ) {
         val pageIndex = page.index
         val syncTriggerOpt = syncPreferences.getSyncTriggerOptions()
-        val isSyncEnabled = syncPreferences.isSyncEnabled()
+        // KMK -->
+        // Google Drive 在本构建不可用时（缺 client_secrets.json）视为未启用
+        val isSyncEnabled = SyncManager.isSyncServiceUsable(syncPreferences)
+        // KMK <--
 
         mutableState.update {
             it.copy(currentPage = pageIndex + 1)
