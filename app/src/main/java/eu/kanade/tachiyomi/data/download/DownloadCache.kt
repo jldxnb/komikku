@@ -132,6 +132,26 @@ class DownloadCache(
             .launchIn(scope)
     }
 
+    // KMK -->
+    /** 该漫画在下载目录里的本地封面 URI（没有下载目录或没有封面时为 null）。内存查表，无 IO。 */
+    fun getLocalCoverUri(sourceId: Long, mangaTitle: String): String? =
+        mangaDirectoryOrNull(sourceId, mangaTitle)?.localCoverUri
+
+    /** 该漫画的下载目录（没有则为 null）。 */
+    fun getMangaDir(sourceId: Long, mangaTitle: String): UniFile? =
+        mangaDirectoryOrNull(sourceId, mangaTitle)?.dir
+
+    /** 写入/清除本地封面后同步索引，立刻生效（不必等下一次全量扫描）。 */
+    fun setLocalCoverUri(sourceId: Long, mangaTitle: String, uri: String?) {
+        mangaDirectoryOrNull(sourceId, mangaTitle)?.localCoverUri = uri
+    }
+
+    private fun mangaDirectoryOrNull(sourceId: Long, mangaTitle: String): MangaDirectory? =
+        rootDownloadsDir.sourceDirs.get(sourceId)
+            ?.mangaDirs
+            ?.get(provider.getMangaDirName(mangaTitle))
+    // KMK <--
+
     /**
      * Returns true if the chapter is downloaded.
      *
@@ -142,6 +162,7 @@ class DownloadCache(
      * @param sourceId the id of the source of the chapter.
      * @param skipCache whether to skip the directory cache and check in the filesystem.
      */
+
     fun isChapterDownloaded(
         chapterName: String,
         chapterScanlator: String?,
@@ -442,7 +463,8 @@ class DownloadCache(
                             .associate { it.name!! to MangaDirectory(it) }
 
                         sourceDir.mangaDirs.values.forEach { mangaDir ->
-                            val chapterDirs = mangaDir.dir?.listFiles().orEmpty()
+                            val files = mangaDir.dir?.listFiles().orEmpty()
+                            val chapterDirs = files
                                 .mapNotNull {
                                     when {
                                         // Ignore incomplete downloads
@@ -458,6 +480,16 @@ class DownloadCache(
                                 .toMutableSet()
 
                             mangaDir.chapterDirs = chapterDirs
+                            // KMK -->
+                            // 顺便记下这本漫画有没有本地封面（目录已经列出来了，等于零额外 IO）
+                            mangaDir.localCoverUri = files
+                                .firstOrNull {
+                                    it.isFile &&
+                                        it.name?.substringBeforeLast('.')?.equals("cover", ignoreCase = true) == true
+                                }
+                                ?.uri
+                                ?.toString()
+                            // KMK <--
                         }
                     }
                 }
@@ -543,6 +575,10 @@ private class MangaDirectory(
     @Serializable(with = UniFileAsStringSerializer::class)
     val dir: UniFile?,
     var chapterDirs: MutableSet<String> = mutableSetOf(),
+    // KMK -->
+    /** 该漫画目录里本地封面文件的 URI（没有则为 null）。加在末尾，旧磁盘缓存仍可解析。 */
+    var localCoverUri: String? = null,
+    // KMK <--
 )
 
 private object UniFileAsStringSerializer : KSerializer<UniFile?> {

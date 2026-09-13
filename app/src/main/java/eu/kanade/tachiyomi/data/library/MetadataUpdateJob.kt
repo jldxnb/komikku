@@ -10,6 +10,7 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkInfo
 import androidx.work.WorkQuery
 import androidx.work.WorkerParameters
+import eu.kanade.tachiyomi.data.coil.LocalCoverStore
 import eu.kanade.tachiyomi.data.notification.Notifications
 import eu.kanade.tachiyomi.util.system.isRunning
 import eu.kanade.tachiyomi.util.system.setForegroundSafely
@@ -114,7 +115,7 @@ class MetadataUpdateJob(private val context: Context, workerParams: WorkerParame
                                 ) {
                                     val source = sourceManager.get(manga.source) ?: return@withUpdateNotification
                                     try {
-                                        updateMangaFromRemote(
+                                        val update = updateMangaFromRemote(
                                             source = source,
                                             manga = manga,
                                             fetchDetails = true,
@@ -123,6 +124,10 @@ class MetadataUpdateJob(private val context: Context, workerParams: WorkerParame
                                             manualFetch = true,
                                             // KMK <--
                                         ).getOrThrow()
+                                        // KMK -->
+                                        // 顺手把封面落到漫画目录（只对已有下载目录的漫画；失败静默、保留原图）
+                                        LocalCoverStore.refreshFromNetwork(update.manga, source)
+                                        // KMK <--
                                     } catch (e: Throwable) {
                                         // Ignore errors and continue
                                         logcat(LogPriority.ERROR, e)

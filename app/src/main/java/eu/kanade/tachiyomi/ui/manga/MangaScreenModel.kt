@@ -48,6 +48,7 @@ import eu.kanade.domain.ui.UiPreferences
 import eu.kanade.presentation.manga.DownloadAction
 import eu.kanade.presentation.manga.components.ChapterDownloadAction
 import eu.kanade.presentation.util.formattedMessage
+import eu.kanade.tachiyomi.data.coil.LocalCoverStore
 import eu.kanade.tachiyomi.data.coil.getBestColor
 import eu.kanade.tachiyomi.data.download.DownloadCache
 import eu.kanade.tachiyomi.data.download.DownloadManager
@@ -619,6 +620,11 @@ class MangaScreenModel(
 
                 // KMK -->
                 clearErrorFromDB(state.manga.id)
+
+                if (manualFetch) {
+                    // 下拉刷新时主动更新一次本地封面：只有真的从网络拉到才覆盖，失败保留原图
+                    LocalCoverStore.refreshFromNetwork(update.manga, state.source)
+                }
                 // KMK <--
 
                 if (manualFetch) {
