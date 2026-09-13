@@ -1,0 +1,236 @@
+name: KMK Release
+
+# 构建「上游 release + 本项目补丁」的正式版 APK，用固定密钥签名后发布到本 fork。
+#
+# 它是上游 build_release.yml 的 "fork 本地版"：上游的 builder 只跑 master、
+# 用上游私有密钥签名、发布到上游仓库，无法构建 personal 分支。
+#
+# 触发：
+#   * schedule          每天检查上游有没有新的 v* 发布 tag
+#   * workflow_dispatch 手动，可指定 tag；force=true 时即使已发布也重新构建
+#   * push(personal)    只在本文件变化时跑，用来验证流水线本身
+#
+# 上游发新版时：把 personal 上的补丁 rebase 到新 tag，然后构建、签名、发布。
+# 冲突时任务失败（不自动乱解），按 docs/自维护发布手册.md 在本地处理。
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '上游 tag（留空 = 自动取最新的 v* 发布 tag）'
+        required: false
+        default: ''
+      force:
+        description: '即使该版本已经发布过也重新构建'
+        type: boolean
+        default: false
+  push:
+    branches:
+      - personal
+    paths:
+      - '.github/workflows/kmk-release.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: kmk-release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and sign
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout personal
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: personal
+          # versionName 后缀由 `git rev-list --count HEAD` 计算，需要完整历史
+          fetch-depth: 0
+
+      - name: Set up JDK
+        uses: actions/setup-java@1bcf9fb12cf4aa7d266a90ae39939e61372fe520 # v5.4.0
+        with:
+          java-version-file: .github/.java-version
+          distribution: temurin
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6
+
+      - name: Fetch upstream tags
+        run: |
+          set -euo pipefail
+          git remote add upstream https://github.com/komikku-app/komikku.git || true
+          git fetch upstream --tags --prune
+
+      - name: Resolve the tag to build
+        id: target
+        run: |
+          set -euo pipefail
+
+          tag="${{ inputs.tag }}"
+          if [ -z "$tag" ]; then
+            # 优先用 GitHub 的 latest release（自动排除预发布版本），失败再退回按版本号排序。
+            tag=$(curl -fsSL \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'User-Agent: kmk-release' \
+              https://api.github.com/repos/komikku-app/komikku/releases/latest \
+              | python3 -c 'import sys,json;print(json.load(sys.stdin).get("tag_name",""))' 2>/dev/null || true)
+          fi
+          if [ -z "$tag" ]; then
+            tag=$(git ls-remote --tags --refs upstream 'refs/tags/v*' | awk -F/ '{print $NF}' | sort -V | tail -n 1)
+          fi
+          if [ -z "$tag" ]; then
+            echo "::error::no upstream release tag found"
+            exit 1
+          fi
+          if ! git rev-parse -q --verify "refs/tags/$tag" > /dev/null; then
+            git fetch upstream "refs/tags/$tag:refs/tags/$tag"
+          fi
+          if ! git rev-parse -q --verify "refs/tags/$tag" > /dev/null; then
+            echo "::error::tag $tag does not exist upstream"
+            exit 1
+          fi
+
+          # 补丁的基座：personal 与目标 tag 的最近公共祖先。
+          base=$(git merge-base personal "$tag")
+
+          # 已经发布过就不再重复发布（force=true 可覆盖）。
+          released=true
+          if [ -z "$(git ls-remote --tags origin "refs/tags/kmk-$tag")" ]; then
+            released=false
+          fi
+          skip=$released
+          if [ "${{ inputs.force }}" = "true" ]; then
+            skip=false
+          fi
+
+          echo "tag=$tag"           >> "$GITHUB_OUTPUT"
+          echo "base=$base"         >> "$GITHUB_OUTPUT"
+          echo "released=$released" >> "$GITHUB_OUTPUT"
+          echo "skip=$skip"         >> "$GITHUB_OUTPUT"
+          echo "基座 $base，目标 $tag，已发布过=$released，跳过=$skip"
+
+      - name: Already released
+        if: steps.target.outputs.skip == 'true'
+        run: echo "kmk-${{ steps.target.outputs.tag }} 已经发布过，本次跳过。"
+
+      - name: Rebase the patches onto the upstream tag
+        if: steps.target.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          tag="${{ steps.target.outputs.tag }}"
+          base="${{ steps.target.outputs.base }}"
+
+          git config user.name "kmk-release-bot"
+          git config user.email "kmk-release-bot@users.noreply.github.com"
+
+          if ! git rebase --onto "$tag" "$base" personal; then
+            git rebase --abort || true
+            echo "::error::把补丁 rebase 到 $tag 时冲突。请在本地按 docs/自维护发布手册.md 解决后推送 personal。"
+            exit 1
+          fi
+
+          echo "=== 本次构建的内容 ==="
+          git log --oneline "$tag"..HEAD
+
+      - name: Check formatting
+        if: steps.target.outputs.skip != 'true'
+        run: ./gradlew spotlessCheck
+
+      - name: Unit tests
+        if: steps.target.outputs.skip != 'true'
+        run: ./gradlew :core:archive:testDebugUnitTest :core:common:testDebugUnitTest
+
+      - name: Build release APKs
+        if: steps.target.outputs.skip != 'true'
+        run: ./gradlew :app:assembleRelease
+
+      - name: Sign APKs
+        if: steps.target.outputs.skip != 'true'
+        uses: r0adkll/sign-android-release@f30bdd30588842ac76044ecdbd4b6d0e3e813478
+        with:
+          releaseDirectory: app/build/outputs/apk/release
+          signingKeyBase64: ${{ secrets.KMK_KEYSTORE_BASE64 }}
+          alias: ${{ secrets.KMK_KEY_ALIAS }}
+          keyStorePassword: ${{ secrets.KMK_KEYSTORE_PASSWORD }}
+          keyPassword: ${{ secrets.KMK_KEY_PASSWORD }}
+
+      - name: Rename and verify the signed APKs
+        if: steps.target.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          tag="${{ steps.target.outputs.tag }}"
+          sdk="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          build_tools=$(ls -d "$sdk"/build-tools/* | sort -V | tail -n 1)
+          echo "build-tools: $build_tools"
+
+          mkdir -p dist
+          for abi in universal arm64-v8a armeabi-v7a; do
+            src="app/build/outputs/apk/release/app-$abi-release-unsigned-signed.apk"
+            [ -f "$src" ] || continue
+            cp "$src" "dist/Komikku-$abi-$tag.apk"
+          done
+
+          if [ -z "$(ls -A dist)" ]; then
+            echo "::error::没有产出已签名的 APK"
+            exit 1
+          fi
+
+          for apk in dist/*.apk; do
+            echo "=== $apk ==="
+            "$build_tools/apksigner" verify --print-certs "$apk"
+            "$build_tools/aapt2" dump badging "$apk" | grep -E '^package:|^native-code' || true
+            echo "dex: $(unzip -l "$apk" | grep -c 'classes.*\.dex' || true)"
+          done
+
+          {
+            echo "### Komikku $tag + KMK patches"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Upstream tag | \`$tag\` |"
+            echo "| Patch base | \`${{ steps.target.outputs.base }}\` |"
+            echo "| Signed with | KMK 自有密钥（SHA-256 \`262628ce…\`）|"
+            echo ""
+            echo "Build: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo ""
+            echo '```'
+            git log --oneline "$tag"..HEAD
+            echo '```'
+          } > dist/release-notes.md
+
+          cat dist/release-notes.md
+
+      - name: Publish the rebased branch
+        if: steps.target.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          tag="${{ steps.target.outputs.tag }}"
+          # personal 由用户本地掌握；这里只把 rebase 结果推到 ci/ 分支，方便本地对齐
+          git push --force origin "HEAD:refs/heads/ci/$tag"
+
+      - name: Publish the release
+        if: steps.target.outputs.skip != 'true'
+        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
+        with:
+          tag_name: kmk-${{ steps.target.outputs.tag }}
+          name: Komikku ${{ steps.target.outputs.tag }} + KMK patches
+          # tag 必须指向本次 rebase 的结果，而不是默认分支
+          target_commitish: ci/${{ steps.target.outputs.tag }}
+          body_path: dist/release-notes.md
+          files: dist/*.apk
+          prerelease: false
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload workflow artifacts
+        if: steps.target.outputs.skip != 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: komikku-kmk-${{ steps.target.outputs.tag }}
+          path: dist/*.apk
+          if-no-files-found: error
+          retention-days: 90
