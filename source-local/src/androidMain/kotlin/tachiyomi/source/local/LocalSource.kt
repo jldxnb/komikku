@@ -163,18 +163,23 @@ class LocalSource(
             .firstOrNull { it.name == COMIC_INFO_FILE }
         val comicInfoArchiveFile = mangaDirFiles.firstOrNull { it.name == COMIC_INFO_ARCHIVE }
         // KMK -->
-        // The reader maps the whole archive and only close() unmaps it, so it is opened, read and
-        // closed in one place. Only the fact that the archive is encrypted is needed further down.
-        // This used to hold the reader open for the rest of the function and never close it, leaking
-        // one mapping per call.
+        // The reader maps the whole archive and only close() unmaps it, so it is opened and closed
+        // in one place. Two things are needed from it: the ComicInfo payload, and whether it is
+        // encrypted -- that flag decides which file copyComicInfoFile writes (ComicInfo.cbm when it
+        // is, plain ComicInfo.xml otherwise). So it has to be read from the archive whenever the
+        // archive exists, not only when there is no plain ComicInfo.xml to fall back to: with both
+        // files present, opening the reader lazily would report the archive as unencrypted and
+        // rewrite it as ComicInfo.xml. This used to hold the reader open for the rest of the
+        // function and never close it, leaking one mapping per call.
         var comicInfoArchiveEncrypted = false
+        val comicInfoArchiveStream: InputStream? = comicInfoArchiveFile?.let { file ->
+            file.archiveReader(context).use { reader ->
+                comicInfoArchiveEncrypted = reader.encrypted
+                reader.getInputStream(COMIC_INFO_FILE)
+            }
+        }
         val existingComicInfo =
-            (
-                existingFile?.openInputStream() ?: comicInfoArchiveFile?.archiveReader(context)?.use { reader ->
-                    comicInfoArchiveEncrypted = reader.encrypted
-                    reader.getInputStream(COMIC_INFO_FILE)
-                }
-                )?.use {
+            (existingFile?.openInputStream() ?: comicInfoArchiveStream)?.use {
                 AndroidXmlReader(it, StandardCharsets.UTF_8.name()).use { xmlReader ->
                     xml.decodeFromReader<ComicInfo>(xmlReader)
                 }
