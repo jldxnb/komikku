@@ -93,13 +93,23 @@ class AppUpdateChecker(
     // KMK <--
 }
 
+// KMK -->
+/**
+ * 自维护 fork：CI 用同一把密钥构建并发布 `kmk-<上游 tag>` 的 release，
+ * 应用内更新直接从这个仓库下载，而不是去上游官网。
+ */
+const val KMK_REPO = "jldxnb/komikku"
+// KMK <--
+
 val GITHUB_REPO: String by lazy { getGithubRepo() }
 
 fun getGithubRepo(peekIntoPreview: Boolean = false): String =
     if (isPreviewBuildType || peekIntoPreview) {
         "komikku-app/komikku-preview"
     } else {
-        "komikku-app/komikku"
+        // KMK -->
+        KMK_REPO
+        // KMK <--
     }
 
 val RELEASE_TAG: String by lazy { getReleaseTag() }
@@ -108,7 +118,10 @@ fun getReleaseTag(peekIntoPreview: Boolean = false): String =
     if (isPreviewBuildType || peekIntoPreview) {
         "r${BuildConfig.COMMIT_COUNT}"
     } else {
-        "v${BuildConfig.VERSION_NAME}"
+        // KMK -->
+        // 我们自己发布的 tag 形如 kmk-v1.14.1，见 .github/workflows/kmk-release.yml
+        "kmk-v${BuildConfig.VERSION_NAME}"
+        // KMK <--
     }
 
 val RELEASE_URL = "https://github.com/$GITHUB_REPO/releases/tag/$RELEASE_TAG"
