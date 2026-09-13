@@ -17,6 +17,18 @@ class ArchiveReader(pfd: ParcelFileDescriptor) : Closeable {
     // so the session state has to be initialized by then.
 
     /**
+     * The archive's file descriptor, kept open so that [zipDirectory] can read entries directly.
+     * [close] releases it together with the mapping.
+     */
+    private val pfd = pfd
+
+    /**
+     * Entry index of a plain ZIP archive, when [ZipDirectory.parse] could read it. Set after the
+     * encryption check, because encrypted archives have to go through libarchive.
+     */
+    private var zipDirectory: ZipDirectory? = null
+
+    /**
      * Names of the entries the read session has already moved past. Asking for one of them again
      * means the session has to restart from the first entry.
      */
@@ -57,6 +69,18 @@ class ArchiveReader(pfd: ParcelFileDescriptor) : Closeable {
     }
     // SY <--
 
+    // KMK -->
+    init {
+        // A ZIP keeps an index of all of its entries, so pages can be read at random instead of
+        // walking the archive with libarchive.
+        if (!encrypted) {
+            zipDirectory = runCatching {
+                ZipDirectory.parse(FileDescriptorSource(pfd.fileDescriptor, size))
+            }.getOrNull()
+        }
+    }
+    // KMK <--
+
     inline fun <T> useEntries(block: (Sequence<ArchiveEntry>) -> T): T = ArchiveInputStream(
         address,
         size,
@@ -75,6 +99,9 @@ class ArchiveReader(pfd: ParcelFileDescriptor) : Closeable {
      * (which is what the reader does for pages) only advances the session, so the per-page scan over
      * the whole archive is reduced to amortized constant time. Jumping backwards restarts the session.
      *
+     * The entry is read from the ZIP central directory when one is available, which is what keeps
+     * reading a chapter linear, and from the libarchive session otherwise.
+     *
      * @throws IllegalStateException if the reader has already been closed. Callers hold this via a
      * long lived lambda (page streams), so asking for an entry after [close] is a real possibility;
      * failing loudly is the only way to avoid handing libarchive an unmapped address.
@@ -82,6 +109,14 @@ class ArchiveReader(pfd: ParcelFileDescriptor) : Closeable {
     @Synchronized
     fun getInputStream(entryName: String): InputStream? {
         check(!closed) { "ArchiveReader is closed" }
+
+        // KMK -->
+        // Read the entry straight from its offset. With libarchive alone this costs one header walk
+        // per page, and that walk restarts whenever the pages are not stored in archive order,
+        // which is what made large CBZ files slow to open.
+        zipDirectory?.open(entryName)?.let { return it }
+        // KMK <--
+
         return try {
             positionSessionOn(entryName)?.readBytes()?.inputStream()
         } catch (e: ArchiveException) {
@@ -154,7 +189,9 @@ class ArchiveReader(pfd: ParcelFileDescriptor) : Closeable {
             closed = true
 
             resetSession()
+            zipDirectory = null
             Os.munmap(address, size)
+            pfd.close()
         }
         // KMK <--
     }
