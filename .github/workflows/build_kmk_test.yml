@@ -83,10 +83,27 @@ jobs:
       - name: Run unit tests
         run: |
           set -o pipefail
-          ./gradlew testDebugUnitTest --console=plain 2>&1 | tee "$RUNNER_TEMP/unit-tests.log"
+          # JitPack 按需构建，偶发解析失败，重试几次
+          for attempt in 1 2 3; do
+            if ./gradlew testDebugUnitTest --console=plain 2>&1 | tee "$RUNNER_TEMP/unit-tests.log"; then
+              exit 0
+            fi
+            echo "::warning::单元测试第 $attempt 次失败，重试"
+            sleep 20
+          done
+          echo "::error::单元测试连续 3 次失败"
+          exit 1
 
       - name: Build debug APK
-        run: ./gradlew assembleDebug
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if ./gradlew assembleDebug --console=plain; then exit 0; fi
+            echo "::warning::assembleDebug 第 $attempt 次失败，重试"
+            sleep 20
+          done
+          echo "::error::assembleDebug 连续 3 次失败"
+          exit 1
 
       - name: Collect and name the APKs
         id: collect
