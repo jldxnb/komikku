@@ -42,20 +42,41 @@ class ArchiveInputStream(
     private val oneByteBuffer = ByteBuffer.allocateDirect(1)
 
     override fun read(): Int {
+        // KMK -->
+        // This direct buffer is reused across reads, so it is rewound and flipped here rather than
+        // inside read(), which has to leave the caller's window alone.
+        oneByteBuffer.clear()
+        // KMK <--
         read(oneByteBuffer)
+        // KMK -->
+        oneByteBuffer.flip()
+        // KMK <--
         return if (oneByteBuffer.hasRemaining()) oneByteBuffer.get().toUByte().toInt() else -1
     }
 
     override fun read(b: ByteArray, off: Int, len: Int): Int {
+        // KMK -->
+        if (len == 0) return 0
+        // KMK <--
         val buffer = ByteBuffer.wrap(b, off, len)
         read(buffer)
-        return if (buffer.hasRemaining()) buffer.remaining() else -1
+        // KMK -->
+        // flip() would move position back to 0, so the count is taken from how far libarchive
+        // advanced it past the caller's offset instead of from remaining().
+        return if (buffer.position() > off) buffer.position() - off else -1
+        // KMK <--
     }
 
     private fun read(buffer: ByteBuffer) {
-        buffer.clear()
+        // KMK -->
+        // No clear() and no flip() in here on purpose. The JNI binding of Archive.readData takes
+        // the write address from `position` and the writable size from `limit - position`, then
+        // advances `position` by the byte count. clear() resets that window to the whole array, so
+        // a read(b, off, len) would be written at the start of b, spill past off + len and even
+        // report the array length as the byte count, and a zero length read would still consume
+        // data. The buffer is therefore handed over exactly as the caller set it up.
+        // KMK <--
         Archive.readData(archive, buffer)
-        buffer.flip()
     }
 
     override fun close() {
