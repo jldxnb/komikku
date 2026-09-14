@@ -1,3 +1,9 @@
+<!-- KMK -->
+> **个人 fork**（上游项目：[komikku-app/komikku](https://github.com/komikku-app/komikku)）
+> 用途：在官方正式版基础上叠加少量自用补丁 —— 本地 CBZ 读取性能、封面落盘与补齐、自签名发布。
+> 由 GitHub Actions 自动跟随上游 release 构建、签名并发布 APK，见 [Releases](https://github.com/jldxnb/komikku/releases)。
+<!-- /KMK -->
+
 <div align="center">
 
 <a href="https://komikku-app.github.io">
