@@ -1,0 +1,52 @@
+name: KMK Token Check
+
+# 一次性（可重复使用）验证：确认 secrets.SYNC_TOKEN 具备推送
+# .github/workflows/** 改动所需的权限。
+#
+# 背景：GITHUB_TOKEN 无法推送含 workflow 文件的提交（需要 workflows 权限），
+# 所以发布流程一直"只 rebase、不推回"。轮换 SYNC_TOKEN 之后，跑这个工作流确认它仍然可用。
+#
+# 它只做一件事：把一行注释追加到 kmk-release.yml，提交到临时分支 build/token-test。
+# 成功 = 令牌权限没问题；失败 = 需要检查 token 的 workflow 权限。
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Try pushing a workflow change
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout with SYNC_TOKEN
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: personal
+          fetch-depth: 1
+          token: ${{ secrets.SYNC_TOKEN }}
+
+      - name: Push a workflow-file change to a scratch branch
+        run: |
+          set -euo pipefail
+
+          if [ -z "${SYNC_TOKEN_MISSING:-}" ] && [ -z "$(git config --get credential.helper || true)" ]; then
+            echo "::warning::没有可用的凭据，推送可能失败"
+          fi
+
+          git config user.name "kmk-token-check"
+          git config user.email "kmk-token-check@users.noreply.github.com"
+
+          git checkout -B build/token-test
+          printf '\n# token-check %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> .github/workflows/kmk-release.yml
+          git add .github/workflows/kmk-release.yml
+          git commit -m "chore: token check (requires workflows permission)"
+
+          if git push --force origin build/token-test; then
+            echo "✅ SYNC_TOKEN 可以推送包含 workflow 文件改动的提交"
+          else
+            echo "::error::SYNC_TOKEN 推送失败：请确认它具备 workflow 权限（fine-grained: Workflows = Read and write；classic: 勾选 workflow）"
+            exit 1
+          fi
