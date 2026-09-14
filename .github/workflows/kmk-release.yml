@@ -140,9 +140,27 @@ jobs:
           git config user.email "kmk-release-bot@users.noreply.github.com"
 
           if ! git rebase --onto "$tag" "$base" personal; then
-            git rebase --abort || true
-            echo "::error::把补丁 rebase 到 $tag 时冲突。请在本地按 docs/自维护发布手册.md 解决后推送 personal。"
-            exit 1
+            # README.md 是本仓库完全自有的文件（见其顶部注释）：
+            # 冲突时自动保留我们这一侧；其它任何冲突仍然中止，避免悄悄丢掉上游改动。
+            while : ; do
+              conflicts="$(git diff --name-only --diff-filter=U)"
+              if [ -z "$conflicts" ]; then
+                echo "::error::rebase 失败但没有冲突文件，请本地排查。"
+                git rebase --abort || true
+                exit 1
+              fi
+              if [ "$conflicts" != "README.md" ]; then
+                git rebase --abort || true
+                echo "::error::把补丁 rebase 到 $tag 时冲突（$conflicts）。请按 docs/自维护发布手册.md 在本地解决后推送 personal。"
+                exit 1
+              fi
+              echo "==> README.md 冲突：保留我们自己的版本，继续"
+              git checkout --theirs README.md
+              git add README.md
+              if GIT_EDITOR=true git rebase --continue; then
+                break
+              fi
+            done
           fi
 
           echo "=== 本次构建的内容 ==="
