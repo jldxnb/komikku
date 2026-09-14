@@ -276,6 +276,19 @@ jobs:
       # 不能授予 GITHUB_TOKEN），而我们的补丁里正好有 workflow 文件。发布用的 tag 改为指向
       # personal（内容与本次 rebase 结果等价），本地产物与 CI 产物因此保持一致。
 
+      # 主存储仍是 personal 分支上的提交；这里额外附一份"搬运/备份格式"的补丁包，
+      # 方便跨机器复用、离线备份，或将来迁移成 patch-only 仓库。
+      - name: Export the patch snapshot
+        if: steps.target.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          tag="${{ steps.target.outputs.tag }}"
+          mkdir -p "$RUNNER_TEMP/kmk-patches"
+          git format-patch "$tag..HEAD" -o "$RUNNER_TEMP/kmk-patches" > /dev/null
+          zip -q -j "dist/Komikku-patches-$tag.zip" "$RUNNER_TEMP"/kmk-patches/*.patch
+          echo "补丁包内容："
+          unzip -l "dist/Komikku-patches-$tag.zip"
+
       - name: Publish the release
         if: steps.target.outputs.skip != 'true'
         uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
@@ -285,7 +298,9 @@ jobs:
           # tag 必须指向本次 rebase 的结果，而不是默认分支
           target_commitish: personal
           body_path: dist/release-notes.md
-          files: dist/*.apk
+          files: |
+            dist/*.apk
+            dist/*.zip
           prerelease: false
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -294,7 +309,9 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: komikku-kmk-${{ steps.target.outputs.tag }}
-          path: dist/*.apk
+          path: |
+            dist/*.apk
+            dist/*.zip
           if-no-files-found: error
           retention-days: 90
       # 失败时把挂掉的测试用例名贴成 commit 评论：任何人都能匿名读到，
