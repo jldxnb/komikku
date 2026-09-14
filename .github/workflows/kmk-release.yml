@@ -54,6 +54,8 @@ jobs:
           ref: personal
           # versionName 后缀由 `git rev-list --count HEAD` 计算，需要完整历史
           fetch-depth: 0
+          # SYNC_TOKEN 具备 workflows 权限：后面要把 rebase 结果（含 workflow 文件）推回仓库
+          token: ${{ secrets.SYNC_TOKEN }}
 
       - name: Set up JDK
         uses: actions/setup-java@1bcf9fb12cf4aa7d266a90ae39939e61372fe520 # v5.4.0
@@ -279,6 +281,7 @@ jobs:
             echo "| Upstream tag | \`$tag\` |"
             echo "| Patch base | \`${{ steps.target.outputs.base }}\` |"
             echo "| Signed with | KMK 自有密钥（SHA-256 \`262628ce…\`）|"
+            echo "| Build branch | \`build/$tag\`（\`$(git rev-parse --short HEAD)\`）|"
             echo ""
             echo "Build: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
             echo ""
@@ -289,10 +292,19 @@ jobs:
 
           cat dist/release-notes.md
 
-      # 说明：这里**不**推送 rebase 结果。
-      # GITHUB_TOKEN 无法推送包含 .github/workflows/** 改动的提交（需要 workflows 权限，而该权限
-      # 不能授予 GITHUB_TOKEN），而我们的补丁里正好有 workflow 文件。发布用的 tag 改为指向
-      # personal（内容与本次 rebase 结果等价），本地产物与 CI 产物因此保持一致。
+      # 把本次 rebase 的结果推回仓库，让发布用的 tag 指向"真正被构建的那份代码"。
+      # GITHUB_TOKEN 没有推送 .github/workflows/** 的权限，所以这里用 SYNC_TOKEN；
+      # 推到 build/<tag> 而不是 personal：personal 是开发分支，而且 build/* 没有 workflow 监听，
+      # 不会连带触发其它流程。重建同一个版本时会 force 覆盖这个分支。
+      - name: Push the rebased result to a build branch
+        if: steps.target.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          tag="${{ steps.target.outputs.tag }}"
+          branch="build/$tag"
+          git push --force origin "HEAD:refs/heads/$branch"
+          echo "已推送 $branch → $(git rev-parse --short HEAD)"
+          echo "验证：远端分支 $(git ls-remote origin "refs/heads/$branch")"
 
       # 主存储仍是 personal 分支上的提交；这里额外附一份"搬运/备份格式"的补丁包，
       # 方便跨机器复用、离线备份，或将来迁移成 patch-only 仓库。
@@ -313,8 +325,8 @@ jobs:
         with:
           tag_name: ${{ steps.target.outputs.release_tag }}
           name: Komikku ${{ steps.target.outputs.tag }} + KMK patches
-          # tag 必须指向本次 rebase 的结果，而不是默认分支
-          target_commitish: personal
+          # tag 指向本次 rebase 后推上去的构建分支（真正被构建的代码）
+          target_commitish: build/${{ steps.target.outputs.tag }}
           body_path: dist/release-notes.md
           files: |
             dist/*.apk
